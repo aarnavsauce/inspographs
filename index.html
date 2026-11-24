@@ -78,35 +78,53 @@
 
   <script>
     const API_URL = "https://api.are.na/v3/channels/inspographs-7q5lmm3p5rm/contents";
+    const CACHE_KEY = "arena_total_count_inspographs";
     const stage = document.getElementById("stage");
+
+    async function getTotalCount() {
+      const cached = sessionStorage.getItem(CACHE_KEY);
+      if (cached && Number(cached) > 0) {
+        return Number(cached);
+      }
+
+      const metaRes = await fetch(`${API_URL}?per=1&_=${Date.now()}`);
+      if (metaRes.status === 429) throw new Error("Rate limited by Are.na — wait ~60s and try again.");
+      if (!metaRes.ok) throw new Error(`HTTP ${metaRes.status}`);
+
+      const metaPayload = await metaRes.json();
+      const totalCount =
+        metaPayload.meta?.total_count ??
+        metaPayload.meta?.total_pages ??
+        metaPayload.length ??
+        0;
+
+      if (totalCount > 0) {
+        sessionStorage.setItem(CACHE_KEY, String(totalCount));
+      }
+
+      return totalCount;
+    }
 
     async function loadRandomBlock() {
       stage.innerHTML = `<p class="meta">Loading...</p>`;
 
       try {
-        // 1. Fetch 1 item to read total block count from v3 pagination metadata
-        const metaRes = await fetch(`${API_URL}?per=1&_=${Date.now()}`);
-        if (!metaRes.ok) throw new Error(`HTTP ${metaRes.status}`);
-        const metaPayload = await metaRes.json();
-
-        const totalCount =
-          metaPayload.meta?.total_count ??
-          metaPayload.meta?.total_pages ??
-          metaPayload.length ??
-          0;
+        // 1. Read total block count from sessionStorage (or fetch once per tab session)
+        const totalCount = await getTotalCount();
 
         if (!totalCount) {
           stage.innerHTML = `<p class="meta">Channel is empty or private.</p>`;
           return;
         }
 
-        // 2. Pick a uniform random index (1 to 800+) and fetch that exact single block
+        // 2. Pick a uniform random index and fetch that single block
         let block = null;
         for (let attempt = 0; attempt < 5; attempt++) {
           const randomPage = Math.floor(Math.random() * totalCount) + 1;
           const res = await fetch(
             `${API_URL}?per=1&page=${randomPage}&_=${Date.now()}`
           );
+          if (res.status === 429) throw new Error("Rate limited by Are.na — wait ~60s and try again.");
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           const payload = await res.json();
 
@@ -128,7 +146,11 @@
 
         renderBlock(block);
       } catch (err) {
-        stage.innerHTML = `<p class="meta">Error loading channel: ${err.message}</p>`;
+        stage.innerHTML = `
+          <p class="meta">${escapeHTML(err.message)}</p>
+          <button id="retry">Try Again</button>
+        `;
+        document.getElementById("retry")?.addEventListener("click", loadRandomBlock);
       }
     }
 
@@ -136,14 +158,12 @@
       let contentHTML = "";
       const blockType = block.type ?? block.class;
 
-      // Extract image URL across v3 (image.large.src / image.medium.src / image.src) and v2 shapes
       const imgUrl =
         block.image?.large?.src ||
         block.image?.medium?.src ||
         block.image?.src ||
         block.image?.display?.url;
 
-      // Extract text content across v3 (content.plain / content.markdown) and v2 shapes
       const textBody =
         typeof block.content === "string"
           ? block.content
